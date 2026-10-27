@@ -7,6 +7,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <system_error>
 #include <stdexcept>
 
@@ -44,30 +45,39 @@ namespace {
 		return result;
 	}
 
-	void compareFiles(const fs::path &left, const fs::path &right) {
+	void compareFiles(const fs::path &left, const fs::path &right, bool silent) {
 		if(hashFile(left) == hashFile(right)) {
-			std::cout << "一致: " << left.string() << " == " << right.string() << '\n';
+			if(!silent) std::cout << "一致: " << left.string() << " == " << right.string() << '\n';
 		} else {
 			std::cout << "相違: " << left.string() << " | " << right.string() << '\n';
 		}
 	}
 
 	using EntryMap = std::map<fs::path, fs::directory_entry>;
-	EntryMap listDirectory(const fs::path &root) {
+	EntryMap listDirectory(const fs::path &root, bool recursive) {
 		EntryMap entries;
 		std::error_code ec;
-		fs::directory_iterator it(root, fs::directory_options::none, ec), end;
-		if(ec) throw std::runtime_error("ディレクトリを読み込めません: " + root.string() + ": " + ec.message());
-		for(; it != end; it.increment(ec)) {
+		if(recursive) {
+			fs::recursive_directory_iterator it(root, fs::directory_options::none, ec), end;
 			if(ec) throw std::runtime_error("ディレクトリを読み込めません: " + root.string() + ": " + ec.message());
-			entries.emplace(it->path().filename(), *it);
+			for(; it != end; it.increment(ec)) {
+				if(ec) throw std::runtime_error("ディレクトリを読み込めません: " + root.string() + ": " + ec.message());
+				entries.emplace(it->path().lexically_relative(root), *it);
+			}
+		} else {
+			fs::directory_iterator it(root, fs::directory_options::none, ec), end;
+			if(ec) throw std::runtime_error("ディレクトリを読み込めません: " + root.string() + ": " + ec.message());
+			for(; it != end; it.increment(ec)) {
+				if(ec) throw std::runtime_error("ディレクトリを読み込めません: " + root.string() + ": " + ec.message());
+				entries.emplace(it->path().filename(), *it);
+			}
 		}
 		return entries;
 	}
 
-	void compareDirectories(const fs::path &left, const fs::path &right) {
-		const auto a = listDirectory(left);
-		const auto b = listDirectory(right);
+	void compareDirectories(const fs::path &left, const fs::path &right, bool recursive, bool silent) {
+		const auto a = listDirectory(left, recursive);
+		const auto b = listDirectory(right, recursive);
 		auto i = a.begin();
 		auto j = b.begin();
 		bool found = false;
@@ -95,11 +105,11 @@ namespace {
 				++i; ++j;
 			}
 		}
-		if(!found) std::cout << "差分はありません。\n";
+		if(!found && !silent) std::cout << "差分はありません。\n";
 	}
 
 	void usage(const char *program) {
-		std::cerr << "使い方: " << program << " <ディレクトリまたはファイル> <ディレクトリまたはファイル>\n";
+		std::cerr << "使い方: " << program << " [-r] [-s] <ディレクトリまたはファイル> <ディレクトリまたはファイル> [-r] [-s]\n";
 	}
 }
 
@@ -109,13 +119,21 @@ int main(int argc, char *argv[]) {
 	SetConsoleCP(CP_UTF8);
 	SetConsoleOutputCP(CP_UTF8);
 #endif
-	if(argc != 3) {
+	bool recursive = false;
+	bool silent = false;
+	std::vector<std::string> paths;
+	for(int i = 1; i < argc; ++i) {
+		if(std::string(argv[i]) == "-r") recursive = true;
+		else if(std::string(argv[i]) == "-s") silent = true;
+		else paths.emplace_back(argv[i]);
+	}
+	if(paths.size() != 2) {
 		usage(argv[0]);
 		return 2;
 	}
 	try {
-		const fs::path left = fs::path(argv[1]);
-		const fs::path right = fs::path(argv[2]);
+		const fs::path left = fs::path(paths[0]);
+		const fs::path right = fs::path(paths[1]);
 		std::error_code ec;
 		const bool existsLeft = fs::exists(left, ec);
 		if(ec || !existsLeft) throw std::runtime_error("パスが存在しません: " + left.string());
@@ -124,8 +142,9 @@ int main(int argc, char *argv[]) {
 		const bool dirLeft = isDirectory(left);
 		const bool dirRight = isDirectory(right);
 		if(dirLeft != dirRight) throw std::runtime_error("比較対象は同じ種類（ディレクトリ同士、またはファイル同士）を指定してください。");
-		if(dirLeft) compareDirectories(left, right);
-		else compareFiles(left, right);
+		if(recursive && !dirLeft) throw std::runtime_error("-r オプションはディレクトリ比較でのみ使用できます。");
+		if(dirLeft) compareDirectories(left, right, recursive, silent);
+		else compareFiles(left, right, silent);
 		return 0;
 	} catch(const std::exception &e) {
 		std::cerr << "エラー: " << e.what() << '\n';
